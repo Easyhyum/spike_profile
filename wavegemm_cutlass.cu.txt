@@ -1,0 +1,53 @@
+// wavegemm.cu — fp32 GEMM C[MxN] = A[MxK] * B[KxN] (row-major) with a predictable grid for the wave sweep:
+// the CUTLASS SIMT SGEMM that cuBLAS itself runs on this GPU (cutlass_80_simt_sgemm_256x128_8x4_nn: threadblock tile
+// 256x128x8, warp tile 64x64, 4 stages, 256 threads, 48 KB smem -> exactly one CTA per SM), without split-K and
+// without any heuristic, so CTAs = (M/256)*(N/128) and waves = CTAs / usable SMs.
+// The earlier hand-written 128x128 kernel (half the cuBLAS throughput) is kept as wavegemm_simple.cu.bak.
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <cuda_runtime.h>
+#include "cutlass/gemm/device/gemm.h"
+#include "cutlass/gemm/threadblock/threadblock_swizzle.h"
+
+using Gemm = cutlass::gemm::device::Gemm<
+    float, cutlass::layout::RowMajor, float, cutlass::layout::RowMajor, float, cutlass::layout::RowMajor, float,
+    cutlass::arch::OpClassSimt, cutlass::arch::Sm80,
+    cutlass::gemm::GemmShape<256, 128, 8>, cutlass::gemm::GemmShape<64, 64, 8>, cutlass::gemm::GemmShape<1, 1, 1>,
+    cutlass::epilogue::thread::LinearCombination<float, 1, float, float>,
+    cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>, 4>;
+using GemmKernel = Gemm::GemmKernel;
+static const int TILE_M = 256, TILE_N = 128;
+static const int SMEM = int(sizeof(GemmKernel::SharedStorage));
+
+void gemm(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
+    TORCH_CHECK(A.is_cuda() && B.is_cuda() && C.is_cuda() && A.dtype() == torch::kFloat32, "fp32 CUDA tensors");
+    int M = A.size(0), K = A.size(1), N = B.size(1);
+    TORCH_CHECK(B.size(0) == K && C.size(0) == M && C.size(1) == N, "shape");
+    TORCH_CHECK(M % TILE_M == 0 && N % TILE_N == 0 && K % 8 == 0, "M multiple of 256, N multiple of 128, K multiple of 8");
+    Gemm op;
+    Gemm::Arguments args({M, N, K}, {A.data_ptr<float>(), K}, {B.data_ptr<float>(), N}, {C.data_ptr<float>(), N},
+                         {C.data_ptr<float>(), N}, {1.0f, 0.0f}, 1);
+    cudaStream_t st = at::cuda::getCurrentCUDAStream();
+    cutlass::Status s = op.initialize(args, nullptr, st);
+    TORCH_CHECK(s == cutlass::Status::kSuccess, "cutlass initialize failed: ", int(s));
+    s = op.run(st);
+    TORCH_CHECK(s == cutlass::Status::kSuccess, "cutlass run failed: ", int(s));
+}
+
+int max_blocks_per_sm() {
+    cudaFuncSetAttribute(cutlass::Kernel2<GemmKernel>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM);
+    int nb = 0;
+    cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, cutlass::Kernel2<GemmKernel>, GemmKernel::kThreadCount, SMEM);
+    return nb;
+}
+int sm_count() { int d = 0; cudaGetDevice(&d); int n = 0; cudaDeviceGetAttribute(&n, cudaDevAttrMultiProcessorCount, d); return n; }
+int smem_per_sm() { int d = 0; cudaGetDevice(&d); int n = 0; cudaDeviceGetAttribute(&n, cudaDevAttrMaxSharedMemoryPerMultiprocessor, d); return n; }
+int smem_bytes() { return SMEM; }
+int tile_m() { return TILE_M; }
+int tile_n() { return TILE_N; }
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("gemm", &gemm, "C = A @ B (fp32, CUTLASS simt sgemm 256x128x8 4-stage, 1 CTA/SM, no split-K)");
+    m.def("max_blocks_per_sm", &max_blocks_per_sm); m.def("sm_count", &sm_count); m.def("smem_per_sm", &smem_per_sm);
+    m.def("smem_bytes", &smem_bytes); m.def("tile_m", &tile_m); m.def("tile_n", &tile_n);
+}

@@ -1,0 +1,25 @@
+# measurement data, logs, caches, environments
+results/
+**/results/
+logs/
+**/logs/
+*.log
+*.npz
+*.csv
+*.png
+*.json
+!model_run/results/model_shapes_*.json
+venv/
+venv_vllm/
+__pycache__/
+*.pyc
+third_party/
+decompiled/
+spike_eval_2026*/
+*.zip
+*.tar.gz
+.ipynb_checkpoints/
+
+# curated summaries are kept
+!spike_tests_vi/results_summary/
+!spike_tests_vi/results_summary/**

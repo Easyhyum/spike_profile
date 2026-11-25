@@ -1,0 +1,1 @@
+../spike_tests/usb_attach.sh

@@ -1,0 +1,1 @@
+../spike_tests/run_all.sh

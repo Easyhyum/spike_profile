@@ -1,0 +1,9 @@
+# spike tests — Python packages (venv). torch must match the CUDA toolkit used by nvcc (extensions are JIT-built).
+torch
+numpy
+matplotlib
+pyvisa
+pyvisa-py
+pyusb
+pyserial
+ninja

@@ -1,0 +1,1 @@
+../spike_tests/02_duration.sh
